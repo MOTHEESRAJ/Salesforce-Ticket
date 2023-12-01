@@ -1,0 +1,220 @@
+// Invoice Trigger
+trigger InvoiceTrigger on Invoice__c (After update) {
+    if(trigger.isAfter && trigger.isUpdate){
+        InvoiceClassHandler.InsuranceRecharge(trigger.new,trigger.oldMap);
+    }
+}
+// Invoice Class Handler
+public class InvoiceClassHandler {
+    static Decimal amount = 0;
+    static Decimal twoPercentage=0;
+    public static void InsuranceRecharge(List<Invoice__c> newList, Map<Id, Invoice__c> oldMap) {
+        Set<Id> invoiceIdsToUpdate = new Set<Id>();
+        Set<Id> invoiceIdsToDelete = new Set<Id>();
+        for (Invoice__c inv : newList) {
+            if (inv.Add_Insurance_Re_Charge__c != oldMap.get(inv.Id).Add_Insurance_Re_Charge__c && inv.Add_Insurance_Re_Charge__c == 'Yes') {
+                invoiceIdsToUpdate.add(inv.Id);
+            }
+            // If insurance recharge is set to 'No', add the invoice Id to the delete set
+            else if (inv.Add_Insurance_Re_Charge__c != oldMap.get(inv.Id).Add_Insurance_Re_Charge__c && inv.Add_Insurance_Re_Charge__c == 'No') {
+                System.debug('Hi');
+                invoiceIdsToDelete.add(inv.Id);
+            }
+        }
+        
+        System.debug(invoiceIdsToUpdate);
+        System.debug(invoiceIdsToDelete);
+        
+        List<Line_Item__c> withoutInsurance = [
+            SELECT Id, Total__c, Part__c FROM Line_Item__c
+            WHERE Invoice__c IN :invoiceIdsToUpdate AND Part__r.ProductCode != 'INS-001'
+        ];
+        
+        System.debug(withoutInsurance);
+        Product2 p = [SELECT Id, Name FROM Product2 WHERE ProductCode = 'INS-001'];
+        
+        if (!invoiceIdsToUpdate.isEmpty()) {
+            Invoice__c inv = [SELECT Id, Add_Insurance_Re_Charge__c FROM Invoice__c WHERE Id IN :invoiceIdsToUpdate];
+            
+            if (inv.Add_Insurance_Re_Charge__c == 'Yes') {
+                for (Line_Item__c l : withoutInsurance) {
+                    amount += l.Total__c;
+                }
+                System.debug('Total Amount: ' + amount);
+                twoPercentage=amount*1.02-amount;
+                // Create a new Line_Item__c record with appropriate field values
+                Line_Item__c createLineItem = new Line_Item__c(
+                    Quantity__c = 1,
+                    Unit_Price__c = twoPercentage,
+                    Invoice__c = inv.Id,
+                    Part__c = p.Id
+                );
+                insert createLineItem;  
+            }
+        }
+        else if (!invoiceIdsToDelete.isEmpty()) {
+            System.debug('Hello');
+            List<Line_Item__c> lineItemsToDelete = [
+                SELECT Id FROM Line_Item__c WHERE Invoice__c IN :invoiceIdsToDelete and Part__r.ProductCode = 'INS-001'
+            ];
+            System.debug(lineItemsToDelete);
+            delete lineItemsToDelete;
+        }
+    }
+}
+
+// LineItemTrigger
+trigger LineItemTrigger on Line_Item__c (after insert,after update,after delete) {
+    if(trigger.isAfter && trigger.isInsert){
+       LineItemTriggerHandler.afterInsertLineItem(trigger.new);
+    }
+    if(trigger.isAfter && trigger.isUpdate){
+        LineItemTriggerHandler.afterUpdateLineItem(trigger.new,trigger.oldMap);
+    }
+    if(trigger.isAfter && trigger.isDelete){
+        LineItemTriggerHandler.afterDeleteLineItem(trigger.old);
+    }
+}
+// LineItem Trigger Handler
+public class LineItemTriggerHandler {
+    // Method for Insert the line Item and Update Insurance
+    public static void afterInsertLineItem(List<Line_Item__c> newList) {
+        Set<Id> invoiceIdsToUpdate = new Set<Id>();
+        Map<Id,Line_Item__c> mapId=new Map<Id,Line_Item__c>();
+        for (Line_Item__c inv : newList) {
+            if(inv.Id!=null){
+                invoiceIdsToUpdate.add(inv.Invoice__c); 
+            }   
+        }   
+        mapId=callToUpdateMethod(invoiceIdsToUpdate);
+        if(!mapId.isEmpty()){
+            update mapId.values();
+        }   
+    }
+    
+    // Method for Update Line Item and After that update Insurance
+    public static void afterUpdateLineItem(List<Line_Item__c> newList, Map<Id, Line_Item__c> oldMap) {
+        Set<Id> invoiceIdsToUpdate = new Set<Id>();
+        Map<Id, Line_Item__c> updateItem = new Map<Id, Line_Item__c>();
+        for (Line_Item__c inv : newList) {
+            if (oldMap!=NULL && inv.Unit_Price__c != oldMap.get(inv.Id).Unit_Price__c || inv.Quantity__c != oldMap.get(inv.Id).Quantity__c) {
+                invoiceIdsToUpdate.add(inv.Invoice__c);
+            }
+        }
+        updateItem = callToUpdateMethod(invoiceIdsToUpdate);
+        if (!updateItem.isEmpty()) {
+            update updateItem.values();
+        }
+    }
+    
+    // Method for Delete line item and update Insurancen
+    public static void afterDeleteLineItem(List<Line_Item__c> oldList){
+        Set<Id> updateLineItemDelete=new Set<Id>();
+        Map<Id,Line_Item__c> mapId=new  Map<Id,Line_Item__c>();
+        Map<Id,Invoice__c> invId=new Map<Id,Invoice__c>();
+        for(Line_Item__c l:oldList){
+            if(l.id!=null){
+                updateLineItemDelete.add(l.Invoice__c);
+            }
+        }
+        mapId=callToUpdateMethod(updateLineItemDelete);
+        System.debug(mapId);
+        List< Invoice__c> inv = [SELECT Id, Add_Insurance_Re_Charge__c FROM Invoice__c WHERE Id IN :updateLineItemDelete];
+        
+        if(!mapId.isEmpty()){
+            Update mapId.values();
+        }
+        else if(mapId.isEmpty()){
+            Invoice__c invoiceUpdate=new Invoice__c(Id=inv[0].Id,Add_Insurance_Re_Charge__c='No');
+            invId.put(invoiceUpdate.id,invoiceUpdate);
+            System.debug(invId);
+            update invId.values();
+        }
+        
+    } 
+    
+    //called method Name callToUpdateMethod
+    public static Map<Id, Line_Item__c> callToUpdateMethod(Set<Id> invoiceIdsToUpdate) {
+        Decimal amount = 0;
+        Decimal twoPercentage=0;
+        Map<Id, Line_Item__c> updateItem = new Map<Id, Line_Item__c>();
+        List<Line_Item__c> withoutInsurance = [ SELECT Id, Total__c, Part__c, Invoice__c FROM Line_Item__c WHERE Invoice__c IN :invoiceIdsToUpdate AND Part__r.ProductCode != 'INS-001'];   
+       List< Product2> p = [SELECT Id, Name, ProductCode FROM Product2 WHERE ProductCode = 'INS-001'];       
+        for (Line_Item__c l : withoutInsurance) {
+            amount += l.Total__c;
+        }
+        twoPercentage = amount * 1.02 - amount;
+        // Update Line_Item__c records with insurance
+        List<Line_Item__c> withInsurance = [SELECT Id, Unit_Price__c FROM Line_Item__c WHERE Invoice__c IN :invoiceIdsToUpdate AND Part__r.ProductCode = 'INS-001'  Limit 1];
+        System.debug(invoiceIdsToUpdate);
+        System.debug(withInsurance);
+        List< Invoice__c> inv = [SELECT Id, Add_Insurance_Re_Charge__c FROM Invoice__c WHERE Id IN :invoiceIdsToUpdate];
+        System.debug(inv);
+        if (withInsurance.size() > 0) 
+        {
+            Line_Item__c LineItemUpdate = new Line_Item__c(id = withInsurance[0].id,Unit_Price__c = twoPercentage);
+            updateItem.put(LineItemUpdate.Id, LineItemUpdate);
+        }
+        return updateItem;
+    }
+}
+
+// Test Coverage Code
+@isTest
+public class InvoiceClassHandlerTest {
+    public static TestMethod void InsuranceRechargeTest(){
+        Test.startTest();
+        Account a=new Account();
+        a.Name='Mothee';
+        Insert a;
+        Contact c=new Contact();
+        c.LastName='Raj';
+        Insert c;
+        Invoice__c i=new Invoice__c();
+        Insert i;
+        
+        Product2 part=new Product2();
+        part.Name='Fire Alarm';
+        part.ProductCode='FA-001';
+        Insert part;
+        Product2 part1=new Product2();
+        part1.Name='GenWatt Diesel 10kW';
+        part1.ProductCode='FA-001';
+        Insert part1;
+        Product2 part2=new Product2();
+        part2.Name='Insurance Re_Charge';
+        part2.ProductCode='INS-001';
+        Insert part2;
+        Line_Item__c lineItem=new Line_Item__c();
+        lineItem.Quantity__c=1;
+        lineItem.Invoice__c=i.Id;
+        lineItem.Unit_Price__c=100;
+        lineItem.Part__c=part.Id;
+        Insert lineItem;
+        Line_Item__c lineItem1=new Line_Item__c();
+        lineItem1.Quantity__c=1;
+        lineItem1.Invoice__c=i.Id;
+        lineItem1.Unit_Price__c=100;
+        lineItem1.Part__c=part1.Id;
+        Insert lineItem1;
+        
+        Line_Item__c insuranceLineItem=new Line_Item__c();
+        insuranceLineItem.Part__c=part2.Id;
+        insuranceLineItem.Invoice__c=i.Id;
+        insuranceLineItem.Unit_Price__c=(lineItem.Unit_Price__c+lineItem1.Unit_Price__c)*1.02-(lineItem.Unit_Price__c+lineItem1.Unit_Price__c);
+        insuranceLineItem.Quantity__c=1;
+        Insert insuranceLineItem;
+        
+        Invoice__c invoiceItem=new Invoice__c();
+        invoiceItem.Add_Insurance_Re_Charge__c='Yes';
+        invoiceItem.Id=insuranceLineItem.Invoice__c;
+        update invoiceItem;
+        
+        Invoice__c invoiceItem1=new Invoice__c();
+        invoiceItem1.Add_Insurance_Re_Charge__c='No';
+        invoiceItem1.Id=insuranceLineItem.Invoice__c;
+        update invoiceItem1;
+        
+        Test.stopTest();
+            }
+}
